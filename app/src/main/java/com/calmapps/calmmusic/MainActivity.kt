@@ -67,6 +67,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -79,8 +80,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.calmapps.calmmusic.data.StreamingProvider
+import com.calmapps.calmmusic.data.isDownloadedNavidrome
+import com.calmapps.calmmusic.data.isLocalPlayback
 import com.calmapps.calmmusic.overlay.SystemOverlayService
 import com.calmapps.calmmusic.ui.AlbumDetailsScreen
+import com.calmapps.calmmusic.ui.DownloadVolume
 import com.calmapps.calmmusic.ui.AlbumUiModel
 import com.calmapps.calmmusic.ui.AlbumsScreen
 import com.calmapps.calmmusic.ui.ArtistDetailsScreen
@@ -290,11 +294,15 @@ fun CalmMusic(app: CalmMusic) {
     val streamingProvider = streamingProviderState.value
     var isAuthenticated by remember { mutableStateOf(app.tokenProvider.getUserToken().isNotEmpty()) }
 
-    val isStreamingAvailable by remember(streamingProvider, isAuthenticated) {
+    val navidromeConfig by settingsManager.navidromeConfig.collectAsState()
+    val navidromeSyncStatus by viewModel.navidromeSyncStatus.collectAsState()
+
+    val isStreamingAvailable by remember(streamingProvider, isAuthenticated, navidromeConfig) {
         derivedStateOf {
             when (streamingProvider) {
                 StreamingProvider.APPLE_MUSIC -> isAuthenticated
                 StreamingProvider.YOUTUBE -> true
+                StreamingProvider.NAVIDROME -> navidromeConfig != null
             }
         }
     }
@@ -450,6 +458,11 @@ fun CalmMusic(app: CalmMusic) {
                         val topVideoIds = songResults.take(5).map { it.videoId }
                         app.youTubePrecacheManager.precacheSearchResults(topVideoIds)
                     }
+                    StreamingProvider.NAVIDROME -> {
+                        val result = app.navidromeClient.search(query = searchQuery.trim())
+                        searchSongs = result.songs.map { it.toUiModel() }
+                        searchAlbums = result.albums.map { it.toUiModel() }
+                    }
                 }
             } catch (e: Exception) {
                 searchError = e.message ?: "Search failed"
@@ -518,7 +531,7 @@ fun CalmMusic(app: CalmMusic) {
         val song = queue[startIndex]
         val controller = localMediaController
 
-        val needsLocalController = song.sourceType == "LOCAL_FILE" || song.sourceType == "YOUTUBE" || song.sourceType == "YOUTUBE_DOWNLOAD"
+        val needsLocalController = isLocalPlayback(song.sourceType) || song.sourceType == "YOUTUBE"
         if (needsLocalController && controller == null) {
             libraryScope.launch {
                 snackbarHostState.showSnackbar(
@@ -626,6 +639,20 @@ fun CalmMusic(app: CalmMusic) {
                     }
                 }
 
+                "NAVIDROME" -> {
+                    val success = try {
+                        viewModel.deleteNavidromeDownload(song)
+                    } catch (_: Exception) {
+                        false
+                    }
+
+                    snackbarHostState.showSnackbar(
+                        message = if (success) "Deleted download" else "Couldn't delete download",
+                        withDismissAction = false,
+                        duration = SnackbarDurationMMD.Short,
+                    )
+                }
+
                 "LOCAL_FILE", "YOUTUBE_DOWNLOAD" -> {
                     val success = try {
                         viewModel.deleteLocalMediaSong(song)
@@ -728,6 +755,17 @@ fun CalmMusic(app: CalmMusic) {
             val className = root.javaClass.name
             val message = root.message ?: error.message ?: ""
 
+            // Converted Navidrome streams report an estimated length that is a few percent longer
+            // than the real file. Seeking into that tail lands past the real end: treat it as
+            // "track finished" rather than a playback failure.
+            val seekedPastEndOfNavidromeStream =
+                error.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE &&
+                        viewModel.playbackState.value.nowPlayingSong?.sourceType == "NAVIDROME"
+            if (seekedPastEndOfNavidromeStream) {
+                viewModel.playNextInQueue(controller)
+                return@registerErrorCallback
+            }
+
             val isNewPipeContentNotAvailable =
                 className == "org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException" ||
                         message.contains("page needs to be reloaded", ignoreCase = true) ||
@@ -794,6 +832,13 @@ fun CalmMusic(app: CalmMusic) {
     LaunchedEffect(isAuthenticated) {
         songsError = null
         albumsError = null
+    }
+
+    LaunchedEffect(navidromeConfig, streamingProvider) {
+        if (navidromeConfig != null && streamingProvider == StreamingProvider.NAVIDROME) {
+            viewModel.syncNavidromeLibrary()
+            libraryPlaylists = playlistsViewModel.refreshPlaylists()
+        }
     }
 
     LaunchedEffect(includeLocalMusic, localMusicFolders) {
@@ -1218,7 +1263,7 @@ fun CalmMusic(app: CalmMusic) {
                                         showNowPlaying = true
                                     }
 
-                                    StreamingProvider.YOUTUBE -> {
+                                    StreamingProvider.YOUTUBE, StreamingProvider.NAVIDROME -> {
                                         val songs = searchSongs
                                         val index = songs.indexOfFirst { it.id == song.id }
                                         val startIndex = if (index >= 0) index else 0
@@ -1302,10 +1347,22 @@ fun CalmMusic(app: CalmMusic) {
                 composable(Screen.Downloads.route) {
                     val downloads by app.youTubeDownloadManager.downloads.collectAsStateWithLifecycle()
 
+                    val downloadedSongs = remember(librarySongs) {
+                        librarySongs.filter {
+                            it.sourceType == "YOUTUBE_DOWNLOAD" || isDownloadedNavidrome(it.sourceType, it.audioUri)
+                        }.sortedBy { it.title.lowercase() }
+                    }
+
                     DownloadsScreen(
                         downloads = downloads,
+                        downloadedSongs = downloadedSongs,
                         onCancelDownload = { id -> app.youTubeDownloadManager.cancelDownload(id) },
-                        onClearFinished = { app.youTubeDownloadManager.clearFinishedDownloads() }
+                        onClearFinished = { app.youTubeDownloadManager.clearFinishedDownloads() },
+                        onPlaySong = { song, songs ->
+                            val index = songs.indexOfFirst { it.id == song.id }
+                            startPlaybackFromQueue(songs, if (index >= 0) index else 0)
+                        },
+                        onDeleteSong = onDelete,
                     )
                 }
 
@@ -1351,6 +1408,27 @@ fun CalmMusic(app: CalmMusic) {
                         }
                     }
 
+                    val downloadFolderLauncher = rememberLauncherForActivityResult(
+                        contract = ActivityResultContracts.OpenDocumentTree(),
+                    ) { uri ->
+                        if (uri != null) {
+                            val flags =
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            try {
+                                context.contentResolver.takePersistableUriPermission(uri, flags)
+                                settingsManager.setDownloadTreeUri(uri.toString())
+                            } catch (_: SecurityException) {
+                                libraryScope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        message = "Couldn't get access to that folder",
+                                        withDismissAction = false,
+                                        duration = SnackbarDurationMMD.Short,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     fun requestBatteryOptimizationExemption() {
                         val powerManager = context.getSystemService(PowerManager::class.java)
                         if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
@@ -1362,6 +1440,32 @@ fun CalmMusic(app: CalmMusic) {
                         }
                     }
 
+                    val navidromeStreamKbps by settingsManager.navidromeStreamKbps.collectAsState()
+                    val navidromeDownloadKbps by settingsManager.navidromeDownloadKbps.collectAsState()
+                    val downloadDirPath by settingsManager.downloadDirPath.collectAsState()
+                    val downloadVolumes = remember(downloadDirPath) {
+                        context.getExternalFilesDirs(android.os.Environment.DIRECTORY_MUSIC)
+                            .filterNotNull()
+                            .mapIndexed { index, dir ->
+                                DownloadVolume(
+                                    path = dir.absolutePath,
+                                    label = when {
+                                        index == 0 -> "Internal storage (app folder)"
+                                        android.os.Environment.isExternalStorageRemovable(dir) -> "SD card (app folder)"
+                                        else -> "External storage (app folder)"
+                                    },
+                                    freeBytes = dir.usableSpace,
+                                )
+                            }
+                    }
+                    val downloadTreeUri by settingsManager.downloadTreeUri.collectAsState()
+                    val selectedDownloadPath = remember(downloadDirPath, downloadTreeUri) {
+                        if (downloadTreeUri != null) null else settingsManager.resolveDownloadDir()?.absolutePath
+                    }
+                    val customDownloadFolderLabel = remember(downloadTreeUri) {
+                        downloadTreeUri?.toUri()?.lastPathSegment ?: downloadTreeUri
+                    }
+
                     SettingsScreen(
                         selectedTab = settingsSelectedTab,
                         onSelectedTabChange = { settingsSelectedTab = it },
@@ -1369,6 +1473,42 @@ fun CalmMusic(app: CalmMusic) {
                         onStreamingProviderChange = { provider ->
                             settingsManager.setStreamingProvider(provider)
                         },
+                        navidromeConfig = navidromeConfig,
+                        onSaveNavidromeConfig = { config ->
+                            try {
+                                val serverInfo = app.navidromeClient.ping(config)
+                                settingsManager.setNavidromeConfig(config)
+                                Result.success(serverInfo)
+                            } catch (e: Exception) {
+                                Result.failure(e)
+                            }
+                        },
+                        onClearNavidromeConfig = {
+                            settingsManager.setNavidromeConfig(null)
+                            libraryScope.launch {
+                                viewModel.clearNavidromeLibrary()
+                                libraryPlaylists = playlistsViewModel.refreshPlaylists()
+                            }
+                        },
+                        navidromeSyncStatus = navidromeSyncStatus,
+                        onSyncNavidromeLibrary = {
+                            libraryScope.launch {
+                                viewModel.syncNavidromeLibrary()
+                                libraryPlaylists = playlistsViewModel.refreshPlaylists()
+                            }
+                        },
+                        navidromeStreamKbps = navidromeStreamKbps,
+                        onNavidromeStreamKbpsChange = { settingsManager.setNavidromeStreamKbps(it) },
+                        navidromeDownloadKbps = navidromeDownloadKbps,
+                        onNavidromeDownloadKbpsChange = { settingsManager.setNavidromeDownloadKbps(it) },
+                        downloadVolumes = downloadVolumes,
+                        selectedDownloadPath = selectedDownloadPath,
+                        onDownloadVolumeSelected = {
+                            settingsManager.setDownloadTreeUri(null)
+                            settingsManager.setDownloadDirPath(it)
+                        },
+                        customDownloadFolderLabel = customDownloadFolderLabel,
+                        onChooseDownloadFolder = { downloadFolderLauncher.launch(null) },
                         completeAlbumsWithYouTube = completeAlbumsWithYouTube,
                         onCompleteAlbumsWithYouTubeChange = { enabled ->
                             settingsManager.setCompleteAlbumsWithYouTube(enabled)
@@ -1423,6 +1563,11 @@ fun CalmMusic(app: CalmMusic) {
             val song = playbackState.nowPlayingSong!!
 
             val isInLibrary = librarySongIds.contains(song.id)
+            val navidromeSongDownloaded = song.sourceType == "NAVIDROME" &&
+                    isDownloadedNavidrome(
+                        song.sourceType,
+                        librarySongs.firstOrNull { it.id == song.id }?.audioUri ?: song.audioUri,
+                    )
 
             val displayDuration = when {
                 playbackState.nowPlayingDurationMs > 0L -> playbackState.nowPlayingDurationMs
@@ -1459,7 +1604,7 @@ fun CalmMusic(app: CalmMusic) {
                 onPlayPauseClick = { togglePlayback() },
                 onSeek = { positionMs ->
                     when (song.sourceType) {
-                        "LOCAL_FILE", "YOUTUBE", "YOUTUBE_DOWNLOAD" -> {
+                        "LOCAL_FILE", "YOUTUBE", "YOUTUBE_DOWNLOAD", "NAVIDROME" -> {
                             localMediaController?.seekTo(positionMs)
                         }
                     }
@@ -1483,7 +1628,8 @@ fun CalmMusic(app: CalmMusic) {
                 onBackClick = { showNowPlaying = false },
                 isVideo = isLocalVideo,
                 player = if (isLocalVideo) localMediaController else null,
-                canDownload = (streamingProvider == StreamingProvider.YOUTUBE && song.sourceType == "YOUTUBE"),
+                canDownload = (streamingProvider == StreamingProvider.YOUTUBE && song.sourceType == "YOUTUBE") ||
+                        (song.sourceType == "NAVIDROME" && !navidromeSongDownloaded),
                 isDownloadInProgress = downloadStatuses.any { it.songId == song.id && (it.state == YouTubeDownloadStatus.State.PENDING || it.state == YouTubeDownloadStatus.State.IN_PROGRESS) },
                 onDownloadClick = {
                     var albumArtist: String? = null
@@ -1536,7 +1682,7 @@ fun CalmMusic(app: CalmMusic) {
                     }
                 },
                 isInLibrary = isInLibrary,
-                sourceType = song.sourceType,
+                sourceType = if (navidromeSongDownloaded) "LOCAL_FILE" else song.sourceType,
                 streamResolverLabel = if (song.sourceType == "YOUTUBE") overlayState.streamResolverLabel else null,
             )
         }

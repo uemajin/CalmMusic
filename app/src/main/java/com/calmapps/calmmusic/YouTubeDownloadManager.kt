@@ -67,7 +67,7 @@ class YouTubeDownloadManager(
 
         val job = appScope.launch {
             val context = app.applicationContext
-            val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+            val musicDir = app.settingsManager.resolveDownloadDir()
 
             if (musicDir == null) {
                 updateDownload(id) { it.copy(state = YouTubeDownloadStatus.State.FAILED, errorMessage = "Storage inaccessible") }
@@ -80,17 +80,28 @@ class YouTubeDownloadManager(
 
             var errorMessage: String? = null
             val ok = try {
-                performYouTubeDownloadInternal(
-                    app = app,
-                    song = song,
-                    albumArtist = albumArtist,
-                    targetDir = musicDir,
-                    context = context,
-                    client = client,
-                    onProgress = { progress ->
-                        updateDownload(id) { status -> status.copy(progress = progress.coerceIn(0f, 1f)) }
-                    },
-                )
+                val reportProgress: (Float) -> Unit = { progress ->
+                    updateDownload(id) { status -> status.copy(progress = progress.coerceIn(0f, 1f)) }
+                }
+                if (song.sourceType == com.calmapps.calmmusic.data.SOURCE_NAVIDROME) {
+                    performNavidromeDownloadInternal(
+                        app = app,
+                        song = song,
+                        musicDir = musicDir,
+                        client = client,
+                        onProgress = reportProgress,
+                    )
+                } else {
+                    performYouTubeDownloadInternal(
+                        app = app,
+                        song = song,
+                        albumArtist = albumArtist,
+                        targetDir = musicDir,
+                        context = context,
+                        client = client,
+                        onProgress = reportProgress,
+                    )
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
                 errorMessage = e.message ?: e.javaClass.simpleName ?: "Unknown error"
@@ -164,12 +175,6 @@ internal suspend fun performYouTubeDownloadInternal(
         val safeTitle = (song.title.ifBlank { videoId })
             .replace(Regex("""[\\\\/:*?\"<>|]"""), "_")
         val fileName = "$safeTitle.m4a"
-        val targetFile = File(targetDir, fileName)
-
-        if (targetFile.exists()) {
-            targetFile.delete()
-        }
-
         tmpFile = withContext(Dispatchers.IO) {
             File.createTempFile("yt-$videoId-", ".m4a", context.cacheDir)
         }
@@ -270,17 +275,9 @@ internal suspend fun performYouTubeDownloadInternal(
         if (!downloadSuccess) return false
 
         withContext(Dispatchers.IO) {
-            FileInputStream(tmpFile).use { input ->
-                FileOutputStream(targetFile).use { output ->
-                    input.copyTo(output)
-                }
-            }
-        }
-
-        withContext(Dispatchers.IO) {
             try {
                 TagOptionSingleton.getInstance().isAndroid = true
-                val audioFile = AudioFileIO.read(targetFile)
+                val audioFile = AudioFileIO.read(tmpFile!!)
                 val tag = audioFile.tagAndConvertOrCreateAndSetDefault
 
                 tag.setField(FieldKey.TITLE, song.title)
@@ -300,6 +297,12 @@ internal suspend fun performYouTubeDownloadInternal(
             }
         }
 
+        // Tags are written on the temp file; then it is moved to the app folder or the folder
+        // chosen in Settings (written through the document provider).
+        val saved = withContext(Dispatchers.IO) {
+            saveDownloadedFile(app, tmpFile!!, safeTitle, "m4a", videoId, targetDir)
+        }
+
         onProgress(1f)
 
         withContext(Dispatchers.IO) {
@@ -313,7 +316,7 @@ internal suspend fun performYouTubeDownloadInternal(
                 val artistDao = database.artistDao()
                 val playlistDao = database.playlistDao()
 
-                val fileUri = android.net.Uri.fromFile(targetFile)
+                val fileUri = android.net.Uri.parse(saved.uri)
                 val existingStreamingEntity = SongEntity(
                     id = videoId,
                     title = song.title,
@@ -334,9 +337,9 @@ internal suspend fun performYouTubeDownloadInternal(
                 val scannedAudio = LocalMusicScanner.buildSongEntityFromFile(
                     context = context,
                     uri = fileUri,
-                    name = targetFile.name,
-                    lastModified = targetFile.lastModified(),
-                    fileSize = targetFile.length(),
+                    name = fileName,
+                    lastModified = saved.lastModified,
+                    fileSize = saved.size,
                     existing = existingStreamingEntity,
                 )
 

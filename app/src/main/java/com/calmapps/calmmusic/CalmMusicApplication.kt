@@ -89,6 +89,15 @@ class CalmMusic : Application(), DefaultLifecycleObserver {
         YouTubeMusicInnertubeClientImpl(client)
     }
 
+    val navidromeClient: NavidromeApiClient by lazy {
+        NavidromeApiClient(
+            http = OkHttpClient.Builder().build(),
+            configProvider = { settingsManager.getNavidromeConfigSync() },
+            streamKbps = { settingsManager.navidromeStreamKbps.value },
+            downloadKbps = { settingsManager.navidromeDownloadKbps.value },
+        )
+    }
+
     val youTubeStreamResolver: YouTubeStreamResolver by lazy {
         YouTubeStreamResolver()
     }

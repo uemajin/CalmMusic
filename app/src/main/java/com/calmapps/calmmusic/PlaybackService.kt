@@ -35,6 +35,8 @@ class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
 
     companion object {
+        const val NAVIDROME_SCHEME = "navidrome"
+
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "calmmusic_playback_channel"
         private var errorCallback: ((PlaybackException) -> Unit)? = null
@@ -96,6 +98,7 @@ class PlaybackService : MediaSessionService() {
                     val uri = mediaItem.localConfiguration?.uri
                     val inferredSourceType = when (uri?.scheme) {
                         "content", "file" -> "LOCAL_FILE"
+                        NAVIDROME_SCHEME -> "NAVIDROME"
                         else -> "YOUTUBE"
                     }
 
@@ -156,6 +159,12 @@ class PlaybackService : MediaSessionService() {
                 return@Factory dataSpec
             }
 
+            if (scheme == NAVIDROME_SCHEME) {
+                // navidrome://<songId> -> signed stream URL (fresh token on every open).
+                val songId = uri.schemeSpecificPart.removePrefix("//")
+                return@Factory dataSpec.withUri(app.navidromeClient.buildStreamUrl(songId).toUri())
+            }
+
             val videoId = dataSpec.key
                 ?: uri.getQueryParameter("v")
                 ?: uri.lastPathSegment
@@ -186,6 +195,14 @@ class PlaybackService : MediaSessionService() {
 
         val networkAndCacheStack = CacheDataSource.Factory()
             .setCache(app.mediaCache)
+            .setCacheKeyFactory { dataSpec ->
+                if (dataSpec.uri.scheme == NAVIDROME_SCHEME) {
+                    // Different bitrates are different byte streams; never mix them in the cache.
+                    dataSpec.uri.toString() + "#kbps=" + app.settingsManager.navidromeStreamKbps.value
+                } else {
+                    dataSpec.key ?: dataSpec.uri.toString()
+                }
+            }
             .setUpstreamDataSourceFactory(resolvingFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 

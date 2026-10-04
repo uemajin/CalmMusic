@@ -60,7 +60,8 @@ fun SongItem(
         song.durationText,
         song.sourceType,
     ) {
-        val local = song.sourceType == "LOCAL_FILE" || song.sourceType == "YOUTUBE_DOWNLOAD"
+        val local = song.sourceType == "LOCAL_FILE" || song.sourceType == "YOUTUBE_DOWNLOAD" ||
+                com.calmapps.calmmusic.data.isDownloadedNavidrome(song.sourceType, song.audioUri)
         val fileExtension = if (local) {
             val uriString = song.audioUri ?: song.id
             try {

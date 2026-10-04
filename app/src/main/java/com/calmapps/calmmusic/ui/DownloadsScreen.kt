@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -29,22 +31,25 @@ import com.mudita.mmd.components.text.TextMMD
 @Composable
 fun DownloadsScreen(
     downloads: List<YouTubeDownloadStatus>,
+    downloadedSongs: List<SongUiModel>,
     onCancelDownload: (String) -> Unit,
     onClearFinished: () -> Unit,
+    onPlaySong: (SongUiModel, List<SongUiModel>) -> Unit,
+    onDeleteSong: (SongUiModel) -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
     ) {
-        if (downloads.isEmpty()) {
+        if (downloads.isEmpty() && downloadedSongs.isEmpty()) {
             Column(
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
                 TextMMD(
-                    text = "No recent downloads",
+                    text = "No downloads yet",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -53,12 +58,65 @@ fun DownloadsScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                items(downloads.size) { index ->
-                    val status = downloads[index]
-                    DownloadItem(
-                        status = status,
-                        onCancel = { onCancelDownload(status.id) },
-                    )
+                if (downloads.isNotEmpty()) {
+                    item {
+                        TextMMD(
+                            text = "Recent activity",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    items(downloads.size) { index ->
+                        val status = downloads[index]
+                        DownloadItem(
+                            status = status,
+                            onCancel = { onCancelDownload(status.id) },
+                        )
+                    }
+                }
+
+                if (downloadedSongs.isNotEmpty()) {
+                    item {
+                        TextMMD(
+                            text = "Downloaded (" + downloadedSongs.size + ")",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    items(downloadedSongs.size) { index ->
+                        val song = downloadedSongs[index]
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onPlaySong(song, downloadedSongs) },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    TextMMD(
+                                        text = song.title,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                    )
+                                    TextMMD(
+                                        text = song.artist,
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                    )
+                                }
+                                IconButton(onClick = { onDeleteSong(song) }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Delete,
+                                        contentDescription = "Delete download",
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            HorizontalDividerMMD()
+                        }
+                    }
                 }
             }
         }

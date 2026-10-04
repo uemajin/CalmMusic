@@ -3,6 +3,8 @@ package com.calmapps.calmmusic.data
 import android.net.Uri
 import android.os.Environment
 import com.calmapps.calmmusic.CalmMusic
+import com.calmapps.calmmusic.NAVIDROME_ID_PREFIX
+import com.calmapps.calmmusic.PlaybackService
 import com.calmapps.calmmusic.ui.AlbumUiModel
 import com.calmapps.calmmusic.ui.ArtistUiModel
 import com.calmapps.calmmusic.ui.SongUiModel
@@ -21,6 +23,7 @@ class LibraryRepository(
     private val songDao by lazy { database.songDao() }
     private val albumDao by lazy { database.albumDao() }
     private val artistDao by lazy { database.artistDao() }
+    private val playlistDao by lazy { database.playlistDao() }
 
     data class LocalResyncStats(
         val totalDiscovered: Int,
@@ -299,10 +302,136 @@ class LibraryRepository(
         }
     }
 
+    /**
+     * Mirrors the Navidrome catalogue into Room (songs, albums, artists with
+     * sourceType NAVIDROME) and the server's playlists. Returns (songs, playlists) synced.
+     */
+    suspend fun syncNavidromeLibrary(onProgress: (Int) -> Unit = {}): Pair<Int, Int> {
+        val (songs, albums) = app.navidromeClient.fetchLibrary(onProgress)
+
+        val songCount = withContext(Dispatchers.IO) {
+            fun pfx(id: String) = NAVIDROME_ID_PREFIX + id
+
+            // Songs downloaded earlier keep pointing at their local file across syncs.
+            val downloaded = songDao.getSongsBySourceType(SOURCE_NAVIDROME)
+                .filter { isDownloadedNavidrome(it.sourceType, it.audioUri) }
+                .filter { entity -> mediaUriExists(app, entity.audioUri) }
+                .associateBy { it.id }
+
+            val albumEntities = albums.map { a ->
+                AlbumEntity(
+                    id = pfx(a.id),
+                    name = a.title,
+                    artist = a.artist,
+                    sourceType = SOURCE_NAVIDROME,
+                    artistId = a.artistId?.let(::pfx),
+                )
+            }
+
+            val artistEntities = (
+                albums.mapNotNull { a ->
+                    val id = a.artistId ?: return@mapNotNull null
+                    ArtistEntity(pfx(id), a.artist ?: "Unknown Artist", SOURCE_NAVIDROME)
+                } + songs.mapNotNull { s ->
+                    val id = s.artistId ?: return@mapNotNull null
+                    ArtistEntity(pfx(id), s.artist, SOURCE_NAVIDROME)
+                }
+                ).distinctBy { it.id }
+
+            val songEntities = songs.map { s ->
+                SongEntity(
+                    id = pfx(s.id),
+                    title = s.title,
+                    artist = s.artist,
+                    album = s.album,
+                    albumId = s.albumId?.let(::pfx),
+                    discNumber = s.discNumber,
+                    trackNumber = s.trackNumber,
+                    durationMillis = s.durationMillis,
+                    sourceType = SOURCE_NAVIDROME,
+                    audioUri = downloaded[pfx(s.id)]?.audioUri
+                        ?: (PlaybackService.NAVIDROME_SCHEME + "://" + s.id),
+                    artistId = s.artistId?.let(::pfx),
+                    releaseYear = s.year,
+                    localLastModifiedMillis = downloaded[pfx(s.id)]?.localLastModifiedMillis,
+                    localFileSizeBytes = downloaded[pfx(s.id)]?.localFileSizeBytes,
+                )
+            }
+
+            // Replace the previous snapshot so items removed on the server disappear.
+            songDao.deleteBySourceType(SOURCE_NAVIDROME)
+            albumDao.deleteBySourceType(SOURCE_NAVIDROME)
+            artistDao.deleteBySourceType(SOURCE_NAVIDROME)
+
+            songEntities.chunked(200).forEach { songDao.upsertAll(it) }
+            albumDao.upsertAll(albumEntities)
+            artistDao.upsertAll(artistEntities)
+            songEntities.size
+        }
+
+        // A playlist problem should not fail the whole library sync.
+        val playlistCount = try {
+            importNavidromePlaylists()
+        } catch (_: Exception) {
+            0
+        }
+        return songCount to playlistCount
+    }
+
+    /**
+     * Mirrors the server's playlists into local playlists with ids "NAVIDROME:<id>".
+     * Imported playlists follow the server: changes made to them in the app are
+     * replaced on the next sync, and playlists removed on the server are removed here.
+     */
+    private suspend fun importNavidromePlaylists(): Int {
+        val remote = app.navidromeClient.fetchPlaylists()
+
+        withContext(Dispatchers.IO) {
+            val knownSongIds = songDao.getSongsBySourceType(SOURCE_NAVIDROME).map { it.id }.toSet()
+            val existing = playlistDao.getAllPlaylists()
+                .filter { it.id.startsWith(NAVIDROME_ID_PREFIX) }
+                .associateBy { it.id }
+
+            val remoteIds = remote.map { NAVIDROME_ID_PREFIX + it.id }.toSet()
+            existing.filterKeys { it !in remoteIds }.values.forEach { playlistDao.deletePlaylist(it) }
+
+            remote.forEach { playlist ->
+                val id = NAVIDROME_ID_PREFIX + playlist.id
+                if (existing.containsKey(id)) {
+                    playlistDao.updatePlaylistMetadata(id, playlist.name, playlist.comment)
+                } else {
+                    playlistDao.upsertPlaylist(PlaylistEntity(id = id, name = playlist.name, description = playlist.comment))
+                }
+
+                playlistDao.deleteTracksForPlaylist(id)
+                val tracks = playlist.songIds
+                    .map { NAVIDROME_ID_PREFIX + it }
+                    .filter { it in knownSongIds }
+                    .distinct()
+                    .mapIndexed { index, songId -> PlaylistTrackEntity(id, songId, index) }
+                if (tracks.isNotEmpty()) playlistDao.upsertTracks(tracks)
+            }
+        }
+        return remote.size
+    }
+
+    suspend fun clearNavidromeLibrary() {
+        withContext(Dispatchers.IO) {
+            playlistDao.getAllPlaylists()
+                .filter { it.id.startsWith(NAVIDROME_ID_PREFIX) }
+                .forEach { playlistDao.deletePlaylist(it) }
+            songDao.deleteBySourceType(SOURCE_NAVIDROME)
+            albumDao.deleteBySourceType(SOURCE_NAVIDROME)
+            artistDao.deleteBySourceType(SOURCE_NAVIDROME)
+        }
+    }
+
     suspend fun ingestAppDownloadsIfMissing(): Int {
         return withContext(Dispatchers.IO) {
-            val downloadsDir = app.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: return@withContext 0
-            val files = downloadsDir.listFiles()?.filter { it.isFile } ?: emptyList()
+            // Downloads may live on any storage volume (internal or SD card).
+            val files = app.getExternalFilesDirs(Environment.DIRECTORY_MUSIC)
+                .filterNotNull()
+                .flatMap { dir -> dir.listFiles()?.filter { it.isFile } ?: emptyList() }
             if (files.isEmpty()) return@withContext 0
 
             val existingDownloads = songDao.getSongsBySourceType("YOUTUBE_DOWNLOAD")

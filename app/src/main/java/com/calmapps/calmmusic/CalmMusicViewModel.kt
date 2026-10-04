@@ -19,6 +19,11 @@ import com.calmapps.calmmusic.data.ArtistEntity
 import com.calmapps.calmmusic.data.ArtistWithCounts
 import com.calmapps.calmmusic.data.CalmMusicDatabase
 import com.calmapps.calmmusic.data.CalmMusicSettingsManager
+import com.calmapps.calmmusic.data.SOURCE_NAVIDROME
+import com.calmapps.calmmusic.data.isDownloadedNavidrome
+import com.calmapps.calmmusic.data.deleteMediaUri
+import com.calmapps.calmmusic.data.isLocalPlayback
+import com.calmapps.calmmusic.data.mediaUriExists
 import com.calmapps.calmmusic.data.LibraryRepository
 import com.calmapps.calmmusic.data.NowPlayingSnapshot
 import com.calmapps.calmmusic.data.NowPlayingStorage
@@ -101,7 +106,7 @@ class CalmMusicViewModel(
             val oldSong = queue[indexInQueue]
 
             val newLocalSong = library.find { candidate ->
-                if (candidate.sourceType != "LOCAL_FILE" && candidate.sourceType != "YOUTUBE_DOWNLOAD") return@find false
+                if (!isLocalPlayback(candidate.sourceType)) return@find false
 
                 if (areSongsMatching(candidate, oldSong)) return@find true
 
@@ -206,7 +211,13 @@ class CalmMusicViewModel(
             return localSongs
         }
 
-        return if (album.sourceType == "YOUTUBE") {
+        return if (album.sourceType == SOURCE_NAVIDROME) {
+            // Search results that are not (yet) in the synced library.
+            app.navidromeClient
+                .getAlbumSongs(album.id.removePrefix(NAVIDROME_ID_PREFIX))
+                .sortedWith(compareBy({ it.discNumber ?: 1 }, { it.trackNumber ?: 0 }))
+                .map { it.toUiModel() }
+        } else if (album.sourceType == "YOUTUBE") {
             getYouTubeAlbumSongs(album)
         } else {
             emptyList()
@@ -428,7 +439,7 @@ class CalmMusicViewModel(
 
             val needsInit = when (song.sourceType) {
                 "APPLE_MUSIC" -> !playbackCoordinator.appleQueueInitialized
-                "LOCAL_FILE", "YOUTUBE", "YOUTUBE_DOWNLOAD" -> !playbackCoordinator.localQueueInitialized
+                "LOCAL_FILE", "YOUTUBE", "YOUTUBE_DOWNLOAD", "NAVIDROME" -> !playbackCoordinator.localQueueInitialized
                 else -> false
             }
 
@@ -479,6 +490,34 @@ class CalmMusicViewModel(
             localFileSizeBytes = null,
         )
 
+    /**
+     * Navidrome songs that have been downloaded play from the local file instead of
+     * streaming. Also repairs queue items whose file has disappeared (e.g. SD card removed).
+     */
+    private fun preferDownloadedCopies(queue: List<SongUiModel>): List<SongUiModel> {
+        if (queue.none { it.sourceType == SOURCE_NAVIDROME }) return queue
+
+        fun fileExists(uri: String?): Boolean = mediaUriExists(app, uri)
+
+        val downloadedById = _librarySongs.value
+            .filter { isDownloadedNavidrome(it.sourceType, it.audioUri) && fileExists(it.audioUri) }
+            .associateBy { it.id }
+
+        return queue.map { song ->
+            if (song.sourceType != SOURCE_NAVIDROME) return@map song
+            val local = downloadedById[song.id]
+            when {
+                local != null -> song.copy(audioUri = local.audioUri)
+                isDownloadedNavidrome(song.sourceType, song.audioUri) ->
+                    song.copy(
+                        audioUri = com.calmapps.calmmusic.PlaybackService.NAVIDROME_SCHEME + "://" +
+                            song.id.removePrefix(com.calmapps.calmmusic.NAVIDROME_ID_PREFIX),
+                    )
+                else -> song
+            }
+        }
+    }
+
     fun startPlaybackFromQueue(
         queue: List<SongUiModel>,
         startIndex: Int,
@@ -487,6 +526,8 @@ class CalmMusicViewModel(
         startPositionMs: Long = 0L,
     ) {
         if (queue.isEmpty() || startIndex !in queue.indices) return
+        @Suppress("NAME_SHADOWING")
+        val queue = preferDownloadedCopies(queue)
 
         val previous = _playbackState.value
         val originalQueue = if (isNewQueue) queue else previous.originalPlaybackQueue
@@ -498,7 +539,7 @@ class CalmMusicViewModel(
         val repeatMode = previous.repeatMode
 
         val queueEntities = queue.map { it.toQueueEntity() }
-        val shouldShowInitialBuffering = song.sourceType != "LOCAL_FILE" && song.sourceType != "YOUTUBE_DOWNLOAD"
+        val shouldShowInitialBuffering = !isLocalPlayback(song.sourceType)
 
         val newState = previous.copy(
             playbackQueue = queue,
@@ -538,7 +579,7 @@ class CalmMusicViewModel(
                 RepeatMode.ONE -> PlaybackRepeatMode.REPEAT_MODE_ONE
             }
             app.mediaPlayerController.setRepeatMode(repeat)
-        } else if (song.sourceType == "LOCAL_FILE" || song.sourceType == "YOUTUBE_DOWNLOAD") {
+        } else if (isLocalPlayback(song.sourceType)) {
             val controller = localController
             if (controller != null && playbackCoordinator.localMediaItemsForQueue.isNotEmpty()) {
 
@@ -549,8 +590,7 @@ class CalmMusicViewModel(
                 // YouTube song should be.
                 var segmentEndIndex = startIndex
                 while (segmentEndIndex < queue.size &&
-                    (queue[segmentEndIndex].sourceType == "LOCAL_FILE" ||
-                            queue[segmentEndIndex].sourceType == "YOUTUBE_DOWNLOAD")
+                    isLocalPlayback(queue[segmentEndIndex].sourceType)
                 ) {
                     segmentEndIndex++
                 }
@@ -626,7 +666,7 @@ class CalmMusicViewModel(
         }
 
         val nextSong = queue[targetIndex]
-        val shouldShowBuffering = nextSong.sourceType != "LOCAL_FILE" && nextSong.sourceType != "YOUTUBE_DOWNLOAD"
+        val shouldShowBuffering = !isLocalPlayback(nextSong.sourceType)
 
         _playbackState.value = state.copy(
             playbackQueueIndex = targetIndex,
@@ -663,7 +703,7 @@ class CalmMusicViewModel(
         }
 
         val prevSong = queue[targetIndex]
-        val shouldShowBuffering = prevSong.sourceType != "LOCAL_FILE" && prevSong.sourceType != "YOUTUBE_DOWNLOAD"
+        val shouldShowBuffering = !isLocalPlayback(prevSong.sourceType)
 
         _playbackState.value = state.copy(
             playbackQueueIndex = targetIndex,
@@ -709,7 +749,7 @@ class CalmMusicViewModel(
             _playbackState.value = newState
             persistPlaybackSnapshot(newState)
 
-            if (current.sourceType == "LOCAL_FILE" || current.sourceType == "YOUTUBE_DOWNLOAD") {
+            if (isLocalPlayback(current.sourceType)) {
                 startPlaybackFromQueue(
                     queue = newQueue,
                     startIndex = 0,
@@ -746,7 +786,7 @@ class CalmMusicViewModel(
             _playbackState.value = newState
             persistPlaybackSnapshot(newState)
 
-            if (restoredCurrent.sourceType == "LOCAL_FILE" || restoredCurrent.sourceType == "YOUTUBE_DOWNLOAD") {
+            if (isLocalPlayback(restoredCurrent.sourceType)) {
                 startPlaybackFromQueue(
                     queue = restoreQueue,
                     startIndex = originalIndex,
@@ -770,7 +810,7 @@ class CalmMusicViewModel(
         persistPlaybackSnapshot()
 
         val song = state.nowPlayingSong
-        if (song?.sourceType == "LOCAL_FILE" || song?.sourceType == "YOUTUBE_DOWNLOAD") {
+        if (isLocalPlayback(song?.sourceType)) {
             localController?.let { controller ->
                 controller.repeatMode = when (newRepeat) {
                     RepeatMode.ONE -> Player.REPEAT_MODE_ONE
@@ -892,7 +932,7 @@ class CalmMusicViewModel(
                 val state = _playbackState.value
                 val queue = state.playbackQueue
                 val currentSong = state.nowPlayingSong
-                val isLocalFile = currentSong?.sourceType == "LOCAL_FILE" || currentSong?.sourceType == "YOUTUBE_DOWNLOAD"
+                val isLocalFile = isLocalPlayback(currentSong?.sourceType)
                 val isYouTube = currentSong?.sourceType == "YOUTUBE"
                 var didAutoAdvance = false
 
@@ -906,7 +946,8 @@ class CalmMusicViewModel(
                 val position = controller.currentPosition
                 val duration = controller.duration
                 val playbackState = controller.playbackState
-                val isBufferingNow = !isLocalFile && playbackState == Player.STATE_BUFFERING
+                val isBufferingNow = (!isLocalFile || currentSong?.sourceType == SOURCE_NAVIDROME) &&
+                    playbackState == Player.STATE_BUFFERING
 
                 var newState = state.copy(
                     isPlaybackPlaying = isPlaying,
@@ -1024,6 +1065,60 @@ class CalmMusicViewModel(
         refreshLibraryFromDatabase()
 
         return result
+    }
+
+    private val _navidromeSyncStatus = MutableStateFlow<String?>(null)
+    val navidromeSyncStatus: StateFlow<String?> = _navidromeSyncStatus
+
+    private val navidromeSyncMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** Pulls the Navidrome catalogue into the local library. Safe to call repeatedly. */
+    suspend fun syncNavidromeLibrary() {
+        if (!navidromeSyncMutex.tryLock()) return
+        try {
+            _navidromeSyncStatus.value = "Syncing library..."
+            val (count, playlistCount) = try {
+                libraryRepository.syncNavidromeLibrary { loaded ->
+                    _navidromeSyncStatus.value = "Syncing library... " + loaded + " songs"
+                }
+            } catch (e: Exception) {
+                _navidromeSyncStatus.value = "Sync failed: " + (e.message ?: e.javaClass.simpleName)
+                return
+            }
+            refreshLibraryFromDatabase()
+            _navidromeSyncStatus.value = "Library synced: " + count + " songs, " + playlistCount + " playlists"
+        } finally {
+            navidromeSyncMutex.unlock()
+        }
+    }
+
+    /** Deletes the downloaded file of a Navidrome song; the song stays in the library as a stream. */
+    suspend fun deleteNavidromeDownload(song: SongUiModel): Boolean {
+        if (!isDownloadedNavidrome(song.sourceType, song.audioUri)) return false
+        withContext(Dispatchers.IO) {
+            deleteMediaUri(app, song.audioUri)
+            val existing = songDao.getSongsBySourceType(SOURCE_NAVIDROME).firstOrNull { it.id == song.id }
+            if (existing != null) {
+                songDao.upsertAll(
+                    listOf(
+                        existing.copy(
+                            audioUri = com.calmapps.calmmusic.PlaybackService.NAVIDROME_SCHEME + "://" +
+                                song.id.removePrefix(com.calmapps.calmmusic.NAVIDROME_ID_PREFIX),
+                            localLastModifiedMillis = null,
+                            localFileSizeBytes = null,
+                        ),
+                    ),
+                )
+            }
+        }
+        refreshLibraryFromDatabase()
+        return true
+    }
+
+    suspend fun clearNavidromeLibrary() {
+        libraryRepository.clearNavidromeLibrary()
+        refreshLibraryFromDatabase()
+        _navidromeSyncStatus.value = null
     }
 
     suspend fun addStreamingSongToLibrary(song: SongUiModel) {
