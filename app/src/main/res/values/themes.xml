@@ -1,4 +1,9 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- MMD provides composable theme; this is a minimal placeholder. -->
     <style name="Theme.CalmMusic" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- Opaque white page drawn in place of the lock screen while music is loaded. -->
+    <style name="Theme.CalmMusic.LockControls" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
 </resources>

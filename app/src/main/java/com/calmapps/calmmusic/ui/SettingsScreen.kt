@@ -66,6 +66,8 @@ fun SettingsScreen(
     navidromeConfig: NavidromeConfig?,
     onSaveNavidromeConfig: suspend (NavidromeConfig) -> Result<String>,
     onClearNavidromeConfig: () -> Unit,
+    lockScreenControlsEnabled: Boolean,
+    onLockScreenControlsChange: (Boolean) -> Unit,
     navidromeSyncStatus: String?,
     onSyncNavidromeLibrary: () -> Unit,
     navidromeStreamKbps: Int,
@@ -167,6 +169,42 @@ fun SettingsScreen(
                                     "Allow CalmMusic to run in background"
                                 },
                                 fontSize = 16.sp,
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 24.dp, end = 16.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onLockScreenControlsChange(!lockScreenControlsEnabled) },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 16.dp),
+                            ) {
+                                TextMMD(
+                                    text = "Lock screen controls",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                TextMMD(
+                                    text = "While music is loaded, waking the phone shows a CalmMusic lock screen with the time, date and previous, play/pause and next buttons. The Mudita lock screen widget only works with the Mudita player. Tap Unlock to unlock the phone, or the X to see the normal lock screen.",
+                                    fontSize = 14.sp,
+                                )
+                            }
+                            SwitchMMD(
+                                checked = lockScreenControlsEnabled,
+                                onCheckedChange = onLockScreenControlsChange,
                             )
                         }
                     }

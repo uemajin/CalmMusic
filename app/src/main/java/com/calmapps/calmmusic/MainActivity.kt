@@ -1516,6 +1516,7 @@ fun CalmMusic(app: CalmMusic) {
                         }
                     }
 
+                    val lockScreenControlsEnabled by settingsManager.lockScreenControls.collectAsState()
                     val navidromeStreamKbps by settingsManager.navidromeStreamKbps.collectAsState()
                     val navidromeDownloadKbps by settingsManager.navidromeDownloadKbps.collectAsState()
                     val downloadDirPath by settingsManager.downloadDirPath.collectAsState()
@@ -1559,6 +1560,8 @@ fun CalmMusic(app: CalmMusic) {
                                 Result.failure(e)
                             }
                         },
+                        lockScreenControlsEnabled = lockScreenControlsEnabled,
+                        onLockScreenControlsChange = { settingsManager.setLockScreenControls(it) },
                         onClearNavidromeConfig = {
                             settingsManager.setNavidromeConfig(null)
                             libraryScope.launch {

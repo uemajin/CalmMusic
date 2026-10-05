@@ -1,6 +1,7 @@
 package com.calmapps.calmmusic
 
 import android.app.NotificationChannel
+import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -51,6 +52,57 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    // Opt-in lock screen controls: when the screen turns on while locked and music is loaded,
+    // show CalmMusic's own playback bar (the Mudita lock screen widget only supports the Mudita
+    // player). A full-screen-intent notification is used so no extra permission is needed.
+    private val screenOnReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            showLockScreenControlsIfNeeded()
+        }
+    }
+
+    private fun showLockScreenControlsIfNeeded() {
+        val app = application as CalmMusic
+        if (!app.settingsManager.lockScreenControls.value) return
+        if (getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != true) return
+
+        val player = mediaSession?.player ?: return
+        if (player.mediaItemCount == 0 ||
+            player.playbackState == Player.STATE_IDLE ||
+            player.playbackState == Player.STATE_ENDED
+        ) return
+
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        manager.createNotificationChannel(
+            NotificationChannel(LOCK_SCREEN_CHANNEL_ID, "Lock screen controls", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Shows playback buttons over the lock screen"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+            },
+        )
+
+        val launch = PendingIntent.getActivity(
+            this,
+            LOCK_SCREEN_NOTIFICATION_ID,
+            Intent(this, LockScreenControlsActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = androidx.core.app.NotificationCompat.Builder(this, LOCK_SCREEN_CHANNEL_ID)
+            .setSmallIcon(androidx.media3.session.R.drawable.media3_notification_small_icon)
+            .setContentTitle("CalmMusic")
+            .setCategory(androidx.core.app.NotificationCompat.CATEGORY_ALARM)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(androidx.core.app.NotificationCompat.VISIBILITY_SECRET)
+            // The channel has no sound or vibration. Do not use setSilent(): it makes the system
+            // refuse to launch the full-screen intent.
+            .setTimeoutAfter(10_000)
+            .setFullScreenIntent(launch, true)
+            .build()
+        manager.notify(LOCK_SCREEN_NOTIFICATION_ID, notification)
+    }
+
     private val mediaSessionCallback = object : MediaSession.Callback {
         @OptIn(UnstableApi::class)
         override fun onMediaButtonEvent(
@@ -78,6 +130,8 @@ class PlaybackService : MediaSessionService() {
         const val NAVIDROME_SCHEME = "navidrome"
 
         private const val AIRPLANE_MODE_KEY_GRACE_MS = 3_000L
+        const val LOCK_SCREEN_NOTIFICATION_ID = 1002
+        private const val LOCK_SCREEN_CHANNEL_ID = "calmmusic_lock_screen_channel"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "calmmusic_playback_channel"
         private var errorCallback: ((PlaybackException) -> Unit)? = null
@@ -173,6 +227,12 @@ class PlaybackService : MediaSessionService() {
             this,
             airplaneModeReceiver,
             IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        ContextCompat.registerReceiver(
+            this,
+            screenOnReceiver,
+            IntentFilter(Intent.ACTION_SCREEN_ON),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
 
@@ -306,6 +366,10 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         try {
             unregisterReceiver(airplaneModeReceiver)
+        } catch (_: IllegalArgumentException) {
+        }
+        try {
+            unregisterReceiver(screenOnReceiver)
         } catch (_: IllegalArgumentException) {
         }
         mediaSession?.run {
