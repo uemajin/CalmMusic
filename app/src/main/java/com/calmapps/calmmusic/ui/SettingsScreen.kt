@@ -407,6 +407,12 @@ fun SettingsScreen(
                             text = "Where downloads are saved. Pick a folder to keep your music where file managers can see it. Existing downloads stay where they are.",
                             fontSize = 14.sp,
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        TextMMD(
+                            text = "Tip: the Mudita Music app only lists songs inside the internal Music folder (for example Music/CalmMusic). It does not read the SD card.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         HorizontalDividerMMD(
                             thickness = 1.dp,
                             modifier = Modifier.padding(vertical = 8.dp),

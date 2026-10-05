@@ -1508,7 +1508,15 @@ fun CalmMusic(app: CalmMusic) {
                             settingsManager.setDownloadDirPath(it)
                         },
                         customDownloadFolderLabel = customDownloadFolderLabel,
-                        onChooseDownloadFolder = { downloadFolderLauncher.launch(null) },
+                        onChooseDownloadFolder = {
+                            // Start the picker in the internal Music folder, where the Mudita player looks.
+                            downloadFolderLauncher.launch(
+                                android.provider.DocumentsContract.buildDocumentUri(
+                                    "com.android.externalstorage.documents",
+                                    "primary:Music",
+                                ),
+                            )
+                        },
                         completeAlbumsWithYouTube = completeAlbumsWithYouTube,
                         onCompleteAlbumsWithYouTubeChange = { enabled ->
                             settingsManager.setCompleteAlbumsWithYouTube(enabled)

@@ -92,7 +92,57 @@ class CalmMusicViewModel(
     private val _playbackState = MutableStateFlow(PlaybackState())
     val playbackState: StateFlow<PlaybackState> = _playbackState
 
+    /**
+     * When a Navidrome song finishes downloading, switch the queue (and the song playing right
+     * now) to the local file, keeping the playback position, so playback no longer depends on
+     * the network.
+     */
+    private fun swapInDownloadedNavidromeCopy(controller: MediaController?) {
+        viewModelScope.launch {
+            delay(200)
+
+            val state = _playbackState.value
+            val queue = state.playbackQueue
+            if (queue.isEmpty()) return@launch
+
+            val updated = preferDownloadedCopies(queue)
+            if (updated == queue) return@launch
+
+            val index = state.playbackQueueIndex
+            val currentChanged =
+                index != null && index in queue.indices && updated[index] != queue[index]
+
+            if (!currentChanged || controller == null) {
+                val newState = state.copy(
+                    playbackQueue = updated,
+                    playbackQueueEntities = updated.map { it.toQueueEntity() },
+                )
+                _playbackState.value = newState
+                persistPlaybackSnapshot(newState)
+                return@launch
+            }
+
+            val wasPlaying = state.isPlaybackPlaying
+            val position = controller.currentPosition
+            startPlaybackFromQueue(
+                queue = updated,
+                startIndex = index!!,
+                isNewQueue = false,
+                localController = controller,
+                startPositionMs = position,
+            )
+            if (!wasPlaying) {
+                controller.playWhenReady = false
+                _playbackState.value = _playbackState.value.copy(isPlaybackPlaying = false)
+            }
+        }
+    }
+
     fun onSongDownloaded(youtubeSongId: String, controller: MediaController?) {
+        if (youtubeSongId.startsWith(com.calmapps.calmmusic.NAVIDROME_ID_PREFIX)) {
+            swapInDownloadedNavidromeCopy(controller)
+            return
+        }
         viewModelScope.launch {
             delay(200)
 

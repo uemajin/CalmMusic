@@ -206,7 +206,31 @@ class PlaybackService : MediaSessionService() {
             .setUpstreamDataSourceFactory(resolvingFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
-        return DefaultDataSource.Factory(this, networkAndCacheStack)
+        val defaultSources = DefaultDataSource.Factory(this, networkAndCacheStack)
+
+        // Outermost layer: whenever the player opens a Navidrome song that has been downloaded,
+        // read the local file instead of the stream. This also covers songs that were queued
+        // before they finished downloading. The result is a file/content URI, which
+        // DefaultDataSource reads directly (no network, no stream cache).
+        return ResolvingDataSource.Factory(defaultSources) { dataSpec ->
+            if (dataSpec.uri.scheme != NAVIDROME_SCHEME) return@Factory dataSpec
+
+            val songId = com.calmapps.calmmusic.NAVIDROME_ID_PREFIX +
+                dataSpec.uri.schemeSpecificPart.removePrefix("//")
+            val localUri = runBlocking(Dispatchers.IO) {
+                val entity = com.calmapps.calmmusic.data.CalmMusicDatabase.getDatabase(app)
+                    .songDao().getSongById(songId)
+                if (entity != null &&
+                    com.calmapps.calmmusic.data.isDownloadedNavidrome(entity.sourceType, entity.audioUri) &&
+                    com.calmapps.calmmusic.data.mediaUriExists(app, entity.audioUri)
+                ) {
+                    entity.audioUri.toUri()
+                } else {
+                    null
+                }
+            }
+            if (localUri != null) dataSpec.withUri(localUri) else dataSpec
+        }
     }
 
     private fun createNotificationChannel() {

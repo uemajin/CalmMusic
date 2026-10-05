@@ -128,6 +128,7 @@ internal fun saveDownloadedFile(
             doc.delete()
             throw e
         }
+        requestMediaScan(app, doc.uri, mimeFor(extension))
         return SavedFile(doc.uri.toString(), doc.length(), doc.lastModified())
     }
 
@@ -139,6 +140,22 @@ internal fun saveDownloadedFile(
         tmp.copyTo(target, overwrite = true)
     }
     return SavedFile(Uri.fromFile(target).toString(), target.length(), target.lastModified())
+}
+
+/**
+ * Asks Android's media index to pick up a file written through the document provider, so other
+ * music apps (such as the Mudita player) list it straight away.
+ */
+private fun requestMediaScan(app: CalmMusic, documentUri: Uri, mime: String) {
+    try {
+        val documentId = android.provider.DocumentsContract.getDocumentId(documentUri)
+        val volume = documentId.substringBefore(':')
+        val relativePath = documentId.substringAfter(':', "")
+        if (relativePath.isEmpty()) return
+        val root = if (volume == "primary") "/storage/emulated/0" else "/storage/$volume"
+        android.media.MediaScannerConnection.scanFile(app, arrayOf("$root/$relativePath"), arrayOf(mime), null)
+    } catch (_: Exception) {
+    }
 }
 
 private fun mimeFor(extension: String): String = when (extension) {
