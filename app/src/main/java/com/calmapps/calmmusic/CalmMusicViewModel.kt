@@ -635,10 +635,18 @@ class CalmMusicViewModel(
             if (controller != null && playbackCoordinator.localMediaItemsForQueue.isNotEmpty()) {
 
                 // IMPORTANT: Segmented Playback Logic
-                // We identify the contiguous segment of local media (LOCAL_FILE or
-                // YOUTUBE_DOWNLOAD) starting from startIndex. This prevents the
+                // We identify the contiguous segment of local media (LOCAL_FILE,
+                // YOUTUBE_DOWNLOAD or NAVIDROME) around startIndex. This prevents the
                 // player from auto-advancing into "gaps" where a streaming
-                // YouTube song should be.
+                // YouTube song should be. The segment includes the songs before
+                // startIndex so that previous-track controls (lock screen, headset,
+                // notification) can go back.
+                var segmentStartIndex = startIndex
+                while (segmentStartIndex > 0 &&
+                    isLocalPlayback(queue[segmentStartIndex - 1].sourceType)
+                ) {
+                    segmentStartIndex--
+                }
                 var segmentEndIndex = startIndex
                 while (segmentEndIndex < queue.size &&
                     isLocalPlayback(queue[segmentEndIndex].sourceType)
@@ -646,25 +654,28 @@ class CalmMusicViewModel(
                     segmentEndIndex++
                 }
 
-                // Construct the MediaItem list for ONLY this segment
-                val segmentMediaItems = (startIndex until segmentEndIndex).mapNotNull { globalIndex ->
-                    val localIndex = playbackCoordinator.localIndexByGlobal?.get(globalIndex)
-                    if (localIndex != null && localIndex != -1) {
-                        playbackCoordinator.localMediaItemsForQueue.getOrNull(localIndex)
-                    } else null
-                }
+                fun mediaItemAt(globalIndex: Int) =
+                    playbackCoordinator.localIndexByGlobal?.get(globalIndex)
+                        ?.takeIf { it != -1 }
+                        ?.let { playbackCoordinator.localMediaItemsForQueue.getOrNull(it) }
+
+                // Construct the MediaItem list for this segment
+                val segmentMediaItems = (segmentStartIndex until segmentEndIndex).mapNotNull(::mediaItemAt)
+                val startItemIndex = (segmentStartIndex until startIndex).count { mediaItemAt(it) != null }
+                val segmentIsWholeQueue = segmentStartIndex == 0 && segmentEndIndex == queue.size
 
                 if (segmentMediaItems.isNotEmpty()) {
                     controller.setMediaItems(
                         segmentMediaItems,
-                        0, // Start at the beginning of THIS segment
+                        startItemIndex,
                         startPositionMs
                     )
 
-                    // IMPORTANT: Never delegate REPEAT_ALL to the local player in a mixed queue.
-                    // The ViewModel must handle the loop.
-                    controller.repeatMode = when (repeatMode) {
-                        RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+                    // The player may only loop the whole queue when the whole queue is in it.
+                    // In a mixed queue (streaming songs in between) the ViewModel handles the loop.
+                    controller.repeatMode = when {
+                        repeatMode == RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+                        repeatMode == RepeatMode.QUEUE && segmentIsWholeQueue -> Player.REPEAT_MODE_ALL
                         else -> Player.REPEAT_MODE_OFF
                     }
 
@@ -863,9 +874,12 @@ class CalmMusicViewModel(
         val song = state.nowPlayingSong
         if (isLocalPlayback(song?.sourceType)) {
             localController?.let { controller ->
-                controller.repeatMode = when (newRepeat) {
-                    RepeatMode.ONE -> Player.REPEAT_MODE_ONE
-                    else -> Player.REPEAT_MODE_OFF // Always OFF for Queue/Off
+                val wholeQueueIsLocal = state.playbackQueue.all { isLocalPlayback(it.sourceType) }
+                controller.repeatMode = when {
+                    newRepeat == RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+                    // Only when every song is in the player; otherwise the ViewModel loops.
+                    newRepeat == RepeatMode.QUEUE && wholeQueueIsLocal -> Player.REPEAT_MODE_ALL
+                    else -> Player.REPEAT_MODE_OFF
                 }
             }
         } else if (song?.sourceType == "APPLE_MUSIC") {
