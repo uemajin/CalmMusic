@@ -52,6 +52,7 @@ fun SongItem(
     showDivider: Boolean = true,
     isInLibrary: Boolean = false,
 ) {
+    val downloadActions = LocalDownloadActions.current
     val (isLocal, subtitle) = remember(
         song.id,
         song.audioUri,
@@ -206,6 +207,17 @@ fun SongItem(
                             }
                         )
 
+                        if (downloadActions?.canDownload(song) == true) {
+                            DashedDivider(thickness = 1.dp)
+                            DropdownMenuItemMMD(
+                                text = { TextMMD(text = "Download") },
+                                onClick = {
+                                    showMenu = false
+                                    downloadActions.downloadSong(song)
+                                }
+                            )
+                        }
+
                         if (isDownloaded || isLocal) {
                             DashedDivider(thickness = 1.dp)
                             DropdownMenuItemMMD(
@@ -240,12 +252,16 @@ fun SongItem(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PlaylistItem(
     playlist: PlaylistUiModel,
     onClick: () -> Unit,
     showDivider: Boolean = true,
 ) {
+    val downloadActions = LocalDownloadActions.current
+    var showMenu by remember { mutableStateOf(false) }
+
     val subtitle = remember(playlist.id, playlist.description, playlist.songCount) {
         val songCountText = playlist.songCount?.let { count ->
             if (count == 1) "1 song" else "$count songs"
@@ -267,27 +283,60 @@ fun PlaylistItem(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { if (downloadActions != null) showMenu = true },
+            )
             .padding(bottom = 8.dp),
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            TextMMD(
-                text = playlist.name,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-
-            if (subtitle.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
                 TextMMD(
-                    text = subtitle,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Normal,
-                    maxLines = 2,
+                    text = playlist.name,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+
+                if (subtitle.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    TextMMD(
+                        text = subtitle,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Normal,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            if (showMenu && downloadActions != null) {
+                Box(modifier = Modifier.wrapContentSize()) {
+                    Icon(
+                        imageVector = Icons.Outlined.Clear,
+                        contentDescription = "Close menu",
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clickable { showMenu = false }
+                    )
+
+                    DropdownMenuMMD(
+                        expanded = true,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        DropdownMenuItemMMD(
+                            text = { TextMMD(text = "Download playlist") },
+                            onClick = {
+                                showMenu = false
+                                downloadActions.downloadPlaylist(playlist)
+                            }
+                        )
+                    }
+                }
             }
         }
 

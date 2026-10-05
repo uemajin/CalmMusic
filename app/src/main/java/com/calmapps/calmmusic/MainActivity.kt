@@ -41,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -84,7 +85,9 @@ import com.calmapps.calmmusic.data.isDownloadedNavidrome
 import com.calmapps.calmmusic.data.isLocalPlayback
 import com.calmapps.calmmusic.overlay.SystemOverlayService
 import com.calmapps.calmmusic.ui.AlbumDetailsScreen
+import com.calmapps.calmmusic.ui.DownloadActions
 import com.calmapps.calmmusic.ui.DownloadVolume
+import com.calmapps.calmmusic.ui.LocalDownloadActions
 import com.calmapps.calmmusic.ui.AlbumUiModel
 import com.calmapps.calmmusic.ui.AlbumsScreen
 import com.calmapps.calmmusic.ui.ArtistDetailsScreen
@@ -1023,6 +1026,79 @@ fun CalmMusic(app: CalmMusic) {
         }
     }
 
+    // Entry points for the long-press "Download" menus on songs, albums and playlists.
+    val downloadActions = remember {
+        object : DownloadActions {
+            private fun albumArtistFor(song: SongUiModel): String? {
+                val albumName = song.album ?: return null
+                return viewModel.libraryAlbums.value
+                    .find { it.title.equals(albumName, ignoreCase = true) }?.artist
+            }
+
+            private fun say(message: String) {
+                libraryScope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = message,
+                        withDismissAction = false,
+                        duration = SnackbarDurationMMD.Short,
+                    )
+                }
+            }
+
+            override fun canDownload(song: SongUiModel): Boolean = when (song.sourceType) {
+                "NAVIDROME" -> !isDownloadedNavidrome(
+                    song.sourceType,
+                    viewModel.librarySongs.value.firstOrNull { it.id == song.id }?.audioUri ?: song.audioUri,
+                )
+                "YOUTUBE" -> settingsManager.streamingProvider.value == StreamingProvider.YOUTUBE
+                else -> false
+            }
+
+            override fun downloadSong(song: SongUiModel) {
+                app.youTubeDownloadManager.enqueueDownload(song, albumArtistFor(song))
+                say("Download started")
+            }
+
+            override fun canDownloadAlbum(album: AlbumUiModel): Boolean =
+                album.sourceType == "NAVIDROME" || album.sourceType == "YOUTUBE"
+
+            private suspend fun enqueueAll(songs: List<SongUiModel>, albumArtist: String?, what: String) {
+                val targets = songs.filter { canDownload(it) }
+                if (targets.isEmpty()) {
+                    say("Nothing to download in this $what")
+                    return
+                }
+                targets.forEach { app.youTubeDownloadManager.enqueueDownload(it, albumArtist ?: albumArtistFor(it)) }
+                say(if (targets.size == 1) "Downloading 1 song" else "Downloading ${targets.size} songs")
+            }
+
+            override fun downloadAlbum(album: AlbumUiModel) {
+                libraryScope.launch {
+                    val songs = try {
+                        viewModel.getAlbumSongsForDetails(album)
+                    } catch (_: Exception) {
+                        say("Couldn't load the album")
+                        return@launch
+                    }
+                    enqueueAll(songs, album.artist, "album")
+                }
+            }
+
+            override fun downloadPlaylist(playlist: PlaylistUiModel) {
+                libraryScope.launch {
+                    val songs = try {
+                        playlistsViewModel.getPlaylistSongs(playlist.id)
+                    } catch (_: Exception) {
+                        say("Couldn't load the playlist")
+                        return@launch
+                    }
+                    enqueueAll(songs, null, "playlist")
+                }
+            }
+        }
+    }
+
+    CompositionLocalProvider(LocalDownloadActions provides downloadActions) {
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             topBar = {
@@ -2050,6 +2126,7 @@ fun CalmMusic(app: CalmMusic) {
                 snackbarHostState
             )
         }
+    }
     }
 }
 

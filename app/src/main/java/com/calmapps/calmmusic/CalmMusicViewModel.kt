@@ -15,6 +15,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import com.apple.android.music.playback.model.PlaybackRepeatMode
 import com.calmapps.calmmusic.data.AlbumEntity
+import com.calmapps.calmmusic.data.ArtistGrouping
 import com.calmapps.calmmusic.data.ArtistEntity
 import com.calmapps.calmmusic.data.ArtistWithCounts
 import com.calmapps.calmmusic.data.CalmMusicDatabase
@@ -374,15 +375,15 @@ class CalmMusicViewModel(
 
     suspend fun getArtistContent(artistId: String): ArtistContent {
         return withContext(Dispatchers.IO) {
-            fun normalizeName(name: String): String =
-                name.trim().replace(Regex("\\s+"), " ").lowercase()
-
             val allArtists = artistDao.getAllArtistsWithCounts()
             val baseArtist = allArtists.firstOrNull { it.id == artistId }
+            val knownAlbumArtists = ArtistGrouping.knownNames(albumDao.getAllAlbums().map { it.artist })
 
             val relatedArtistIds: List<String> = if (baseArtist != null) {
-                val key = normalizeName(baseArtist.name)
-                allArtists.filter { normalizeName(it.name) == key }.map { it.id }
+                val key = ArtistGrouping.groupKey(baseArtist.name, knownAlbumArtists)
+                allArtists
+                    .filter { ArtistGrouping.groupKey(it.name, knownAlbumArtists) == key }
+                    .map { it.id }
             } else {
                 listOf(artistId)
             }
@@ -1433,7 +1434,11 @@ class CalmMusicViewModel(
                     )
                 }
 
-            val mergedArtists = mergeArtistsByName(allArtistsWithCounts, uniqueAlbumCounts)
+            val mergedArtists = mergeArtistsByName(
+                allArtistsWithCounts,
+                uniqueAlbumCounts,
+                ArtistGrouping.knownNames(allAlbums.map { it.artist }),
+            )
 
             updateLibrary(
                 songs = songModels,
@@ -1458,17 +1463,17 @@ class CalmMusicViewModel(
     private fun mergeArtistsByName(
         allArtistsWithCounts: List<ArtistWithCounts>,
         uniqueAlbumCounts: Map<String, Int>,
+        knownAlbumArtists: Set<String>,
     ): List<ArtistUiModel> {
-        fun normalizeName(name: String): String =
-            name.trim().replace(Regex("\\s+"), " ").lowercase()
-
         return allArtistsWithCounts
-            .groupBy { normalizeName(it.name) }
-            .values
-            .map { group ->
-                val primary = group.find { it.sourceType == "LOCAL_FILE" }
-                    ?: group.find { it.sourceType == "YOUTUBE_DOWNLOAD" }
-                    ?: group.first()
+            .groupBy { ArtistGrouping.groupKey(it.name, knownAlbumArtists) }
+            .map { (key, group) ->
+                // Prefer the entry whose own name is the primary artist ("X" rather than "X, Y").
+                val candidates = group.filter { ArtistGrouping.normalize(it.name) == key }
+                    .ifEmpty { group }
+                val primary = candidates.find { it.sourceType == "LOCAL_FILE" }
+                    ?: candidates.find { it.sourceType == "YOUTUBE_DOWNLOAD" }
+                    ?: candidates.first()
 
                 val totalSongCount = group.sumOf { it.songCount }
                 val totalAlbumCount = group.sumOf { artist -> uniqueAlbumCounts[artist.id] ?: 0 }
@@ -1552,7 +1557,11 @@ class CalmMusicViewModel(
 
             _libraryAlbums.value = mergedAlbums
 
-            _libraryArtists.value = mergeArtistsByName(allArtistsWithCounts, uniqueAlbumCounts)
+            _libraryArtists.value = mergeArtistsByName(
+                allArtistsWithCounts,
+                uniqueAlbumCounts,
+                ArtistGrouping.knownNames(allAlbums.map { it.artist }),
+            )
             _libraryPlaylists.value = allPlaylistsWithCounts.map { playlist ->
                 PlaylistUiModel(
                     id = playlist.id,

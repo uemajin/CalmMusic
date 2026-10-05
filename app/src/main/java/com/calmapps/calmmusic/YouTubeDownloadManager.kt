@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -42,6 +44,8 @@ data class YouTubeDownloadStatus(
     enum class State { PENDING, IN_PROGRESS, COMPLETED, FAILED, CANCELED }
 }
 
+private const val MAX_PARALLEL_DOWNLOADS = 2
+
 class YouTubeDownloadManager(
     private val app: CalmMusic,
     private val appScope: CoroutineScope,
@@ -53,7 +57,16 @@ class YouTubeDownloadManager(
 
     private val jobsById = mutableMapOf<String, Job>()
 
+    // Albums and playlists enqueue many songs at once; only a couple download at a time.
+    private val downloadPermits = Semaphore(MAX_PARALLEL_DOWNLOADS)
+
     fun enqueueDownload(song: com.calmapps.calmmusic.ui.SongUiModel, albumArtist: String? = null) {
+        val alreadyActive = _downloads.value.any {
+            it.songId == song.id &&
+                (it.state == YouTubeDownloadStatus.State.PENDING || it.state == YouTubeDownloadStatus.State.IN_PROGRESS)
+        }
+        if (alreadyActive) return
+
         val id = UUID.randomUUID().toString()
         val initial = YouTubeDownloadStatus(
             id = id,
@@ -66,6 +79,7 @@ class YouTubeDownloadManager(
         _downloads.value = _downloads.value + initial
 
         val job = appScope.launch {
+          downloadPermits.withPermit {
             val context = app.applicationContext
             val musicDir = app.settingsManager.resolveDownloadDir()
 
@@ -115,6 +129,7 @@ class YouTubeDownloadManager(
                     errorMessage = if (ok) null else (errorMessage ?: status.errorMessage ?: "Unknown error"),
                 )
             }
+          }
         }
 
         jobsById[id] = job
