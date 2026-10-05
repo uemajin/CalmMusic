@@ -4,8 +4,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.SystemClock
+import android.view.KeyEvent
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
@@ -34,9 +40,44 @@ import java.util.concurrent.TimeUnit
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
 
+    // When the radios are switched off (airplane mode / the Mudita "Offline+" switch) the
+    // headphone-jack detector can report a play/pause button press that never releases, and
+    // Android then repeats it ~20 times a second. Remember when airplane mode last changed so
+    // the first spurious press can be ignored too.
+    private var lastAirplaneModeChangeMs = 0L
+    private val airplaneModeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            lastAirplaneModeChangeMs = SystemClock.elapsedRealtime()
+        }
+    }
+
+    private val mediaSessionCallback = object : MediaSession.Callback {
+        @OptIn(UnstableApi::class)
+        override fun onMediaButtonEvent(
+            session: MediaSession,
+            controllerInfo: MediaSession.ControllerInfo,
+            intent: Intent,
+        ): Boolean {
+            val event = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                ?: return false
+
+            // Held-down keys auto-repeat; a repeat is never a new button press.
+            if (event.repeatCount > 0) return true
+
+            val isPlayPauseKey = event.keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ||
+                event.keyCode == KeyEvent.KEYCODE_HEADSETHOOK
+            val justAfterAirplaneModeChange =
+                SystemClock.elapsedRealtime() - lastAirplaneModeChangeMs < AIRPLANE_MODE_KEY_GRACE_MS
+            if (isPlayPauseKey && justAfterAirplaneModeChange) return true
+
+            return false
+        }
+    }
+
     companion object {
         const val NAVIDROME_SCHEME = "navidrome"
 
+        private const val AIRPLANE_MODE_KEY_GRACE_MS = 3_000L
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "calmmusic_playback_channel"
         private var errorCallback: ((PlaybackException) -> Unit)? = null
@@ -125,7 +166,15 @@ class PlaybackService : MediaSessionService() {
 
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(sessionActivityPendingIntent)
+            .setCallback(mediaSessionCallback)
             .build()
+
+        ContextCompat.registerReceiver(
+            this,
+            airplaneModeReceiver,
+            IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
 
         val notificationProvider = DefaultMediaNotificationProvider.Builder(this)
             .setChannelId(CHANNEL_ID)
@@ -255,6 +304,10 @@ class PlaybackService : MediaSessionService() {
         mediaSession
 
     override fun onDestroy() {
+        try {
+            unregisterReceiver(airplaneModeReceiver)
+        } catch (_: IllegalArgumentException) {
+        }
         mediaSession?.run {
             player.release()
             release()
