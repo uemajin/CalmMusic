@@ -66,6 +66,8 @@ fun SettingsScreen(
     navidromeConfig: NavidromeConfig?,
     onSaveNavidromeConfig: suspend (NavidromeConfig) -> Result<String>,
     onClearNavidromeConfig: () -> Unit,
+    navidromeScrobbleEnabled: Boolean,
+    onNavidromeScrobbleChange: (Boolean) -> Unit,
     lockScreenControlsEnabled: Boolean,
     onLockScreenControlsChange: (Boolean) -> Unit,
     navidromeSyncStatus: String?,
@@ -308,6 +310,8 @@ fun SettingsScreen(
                         savedConfig = navidromeConfig,
                         onSave = onSaveNavidromeConfig,
                         onClear = onClearNavidromeConfig,
+                        scrobbleEnabled = navidromeScrobbleEnabled,
+                        onScrobbleChange = onNavidromeScrobbleChange,
                         syncStatus = navidromeSyncStatus,
                         onSyncNow = onSyncNavidromeLibrary,
                         streamKbps = navidromeStreamKbps,
@@ -798,6 +802,8 @@ private fun LazyListScope.navidromeItems(
     savedConfig: NavidromeConfig?,
     onSave: suspend (NavidromeConfig) -> Result<String>,
     onClear: () -> Unit,
+    scrobbleEnabled: Boolean,
+    onScrobbleChange: (Boolean) -> Unit,
     syncStatus: String?,
     onSyncNow: () -> Unit,
     streamKbps: Int,
@@ -960,6 +966,33 @@ private fun LazyListScope.navidromeItems(
                 description = "Original keeps the file exactly as stored on the server.",
                 kbps = downloadKbps,
                 onChange = onDownloadKbpsChange,
+            )
+        }
+    }
+
+    item {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onScrobbleChange(!scrobbleEnabled) }
+                .padding(top = 24.dp, end = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 16.dp),
+            ) {
+                TextMMD(text = "Scrobble plays", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(4.dp))
+                TextMMD(
+                    text = "Tell your server what you listen to, so it reaches ListenBrainz or Last.fm if you linked them in Navidrome. A song counts after half of it has played. Plays made offline are sent when you are back online.",
+                    fontSize = 14.sp,
+                )
+            }
+            SwitchMMD(
+                checked = scrobbleEnabled,
+                onCheckedChange = onScrobbleChange,
             )
         }
     }

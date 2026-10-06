@@ -12,6 +12,9 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.security.SecureRandom
 
+/** The server answered, but refused the request (as opposed to a network failure). */
+class NavidromeApiException(message: String) : IOException(message)
+
 data class NavidromeSong(
     val id: String,
     val title: String,
@@ -130,12 +133,23 @@ class NavidromeApiClient(
             }
             if (root.optString("status") != "ok") {
                 val error = root.optJSONObject("error")
-                throw IOException(
+                throw NavidromeApiException(
                     error?.optString("message").takeUnless { it.isNullOrBlank() } ?: "Request failed",
                 )
             }
             root
         }
+    }
+
+    /**
+     * Reports a play to the server (which forwards it to ListenBrainz / Last.fm if linked there).
+     * With [submission] false it only announces "now playing"; with true it records the play,
+     * stamped with [playedAtMillis] so plays made offline keep their real time.
+     */
+    suspend fun scrobble(songId: String, playedAtMillis: Long?, submission: Boolean) {
+        val params = mutableMapOf("id" to songId, "submission" to submission.toString())
+        if (playedAtMillis != null) params["time"] = playedAtMillis.toString()
+        call(requireConfig(), "scrobble", params)
     }
 
     /** Verifies the server URL and credentials. Returns a short server description. */

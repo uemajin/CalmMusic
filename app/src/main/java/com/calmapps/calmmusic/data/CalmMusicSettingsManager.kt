@@ -52,6 +52,15 @@ class CalmMusicSettingsManager(context: Context) {
     private val _navidromeConfig = MutableStateFlow(readNavidromeConfig())
     val navidromeConfig: StateFlow<NavidromeConfig?> = _navidromeConfig.asStateFlow()
 
+    private val _navidromeScrobble = MutableStateFlow(prefs.getBoolean(KEY_NAVIDROME_SCROBBLE, true))
+    /** Report Navidrome plays to the server (which forwards them to ListenBrainz / Last.fm). */
+    val navidromeScrobble: StateFlow<Boolean> = _navidromeScrobble.asStateFlow()
+
+    fun setNavidromeScrobble(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_NAVIDROME_SCROBBLE, enabled) }
+        _navidromeScrobble.value = enabled
+    }
+
     private val _lockScreenControls = MutableStateFlow(prefs.getBoolean(KEY_LOCK_SCREEN_CONTROLS, false))
     /** Show playback buttons over the lock screen while music is loaded. */
     val lockScreenControls: StateFlow<Boolean> = _lockScreenControls.asStateFlow()
@@ -211,6 +220,7 @@ class CalmMusicSettingsManager(context: Context) {
         private const val KEY_LAST_LOCAL_LIBRARY_SCAN_MILLIS = "last_local_library_scan_millis"
         private const val KEY_HAS_COMPLETED_PERMISSIONS_ONBOARDING = "has_completed_permissions_onboarding"
         private const val SECURE_PREFS_NAME = "calmmusic_secure"
+        private const val KEY_NAVIDROME_SCROBBLE = "navidrome_scrobble"
         private const val KEY_LOCK_SCREEN_CONTROLS = "lock_screen_controls"
         private const val KEY_NAVIDROME_STREAM_KBPS = "navidrome_stream_kbps"
         private const val KEY_NAVIDROME_DOWNLOAD_KBPS = "navidrome_download_kbps"

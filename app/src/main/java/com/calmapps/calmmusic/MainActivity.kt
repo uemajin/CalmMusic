@@ -1517,6 +1517,7 @@ fun CalmMusic(app: CalmMusic) {
                     }
 
                     val lockScreenControlsEnabled by settingsManager.lockScreenControls.collectAsState()
+                    val navidromeScrobbleEnabled by settingsManager.navidromeScrobble.collectAsState()
                     val navidromeStreamKbps by settingsManager.navidromeStreamKbps.collectAsState()
                     val navidromeDownloadKbps by settingsManager.navidromeDownloadKbps.collectAsState()
                     val downloadDirPath by settingsManager.downloadDirPath.collectAsState()
@@ -1560,6 +1561,8 @@ fun CalmMusic(app: CalmMusic) {
                                 Result.failure(e)
                             }
                         },
+                        navidromeScrobbleEnabled = navidromeScrobbleEnabled,
+                        onNavidromeScrobbleChange = { settingsManager.setNavidromeScrobble(it) },
                         lockScreenControlsEnabled = lockScreenControlsEnabled,
                         onLockScreenControlsChange = { settingsManager.setLockScreenControls(it) },
                         onClearNavidromeConfig = {

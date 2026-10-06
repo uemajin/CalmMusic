@@ -30,6 +30,7 @@ import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
@@ -40,6 +41,11 @@ import java.util.concurrent.TimeUnit
  */
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
+
+    private val scrobbleScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.IO,
+    )
+    private var scrobbler: NavidromeScrobbler? = null
 
     // When the radios are switched off (airplane mode / the Mudita "Offline+" switch) the
     // headphone-jack detector can report a play/pause button press that never releases, and
@@ -174,6 +180,8 @@ class PlaybackService : MediaSessionService() {
         player.setAudioAttributes(audioAttributes, true)
 
         player.setHandleAudioBecomingNoisy(true)
+
+        scrobbler = NavidromeScrobbler(application as CalmMusic, player, scrobbleScope).also { it.start() }
 
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
@@ -364,6 +372,9 @@ class PlaybackService : MediaSessionService() {
         mediaSession
 
     override fun onDestroy() {
+        scrobbler?.release()
+        scrobbler = null
+        scrobbleScope.cancel()
         try {
             unregisterReceiver(airplaneModeReceiver)
         } catch (_: IllegalArgumentException) {
